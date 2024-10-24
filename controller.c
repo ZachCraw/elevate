@@ -11,16 +11,11 @@
 #define PORT 3000
 #define MAX_CARS 10
 #define MAX_QUEUE 10
-#define MAX_DESTINATIONS 10
 
 typedef struct {
-    pthread_mutex_t mutex;
-    pthread_cond_t cond; 
     char name[256];
     char current_floor[4];
-    char destination_floor[MAX_DESTINATIONS][4];
-    char lowest_floor[4];
-    char highest_floor[4];
+    char destination_floor[4];
     char status[8];
     int socket;
     pthread_mutex_t mutex;
@@ -28,7 +23,7 @@ typedef struct {
     int queue_size;
 } Car;
 
-Car cars[MAX_CARS];
+Car cars[10];
 int car_count = 0;
 int server_socket;
 pthread_mutex_t car_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -59,50 +54,6 @@ void log_message(const char *message) {
     printf("[%s] %s\n", time_str, message_copy);
 }
 
-void add_destination(Car *car, const char *floor) {
-    if (car->destination_count < MAX_DESTINATIONS) {
-        strncpy(car->destination_floors[car->destination_count], floor, sizeof(car->destination_floors[car->destination_count]));
-        car->destination_count++;
-    } else {
-        printf("Destination queue is full for car %s\n", car->name);
-    }
-}
-
-void handle_new_request(const char *source_floor, const char *destination_floor) {
-    Car *selected_car = NULL;
-    int min_diff = INT_MAX;
-
-    pthread_mutex_lock(&car_mutex);
-    for (int i = 0; i < car_count; i++) {
-        pthread_mutex_lock(&cars[i].mutex);
-        if (strcmp(cars[i].status, "Closed") == 0) {
-            int diff = abs(atoi(source_floor) - atoi(cars[i].current_floor));
-            if (diff < min_diff) {
-                min_diff = diff;
-                selected_car = &cars[i];
-            }
-        }
-        pthread_mutex_unlock(&cars[i].mutex);
-    }
-
-    if (selected_car) {
-        pthread_mutex_lock(&selected_car->mutex);
-        add_destination(selected_car, source_floor);
-        add_destination(selected_car, destination_floor);
-        pthread_cond_broadcast(&selected_car->cond);
-        pthread_mutex_unlock(&selected_car->mutex);
-
-        // Notify car of new destination
-        char command[BUFFER_SIZE];
-        snprintf(command, sizeof(command), "FLOOR %s", source_floor);
-        send(selected_car->socket, command, strlen(command), 0);
-    } else {
-        printf("No available car for floor %s\n", source_floor);
-    }
-    pthread_mutex_unlock(&car_mutex);
-}
-
-
 void *handle_car(void *arg) {
     int car_socket = *(int *)arg;
     free(arg);
@@ -130,8 +81,6 @@ void *handle_car(void *arg) {
     pthread_mutex_lock(&car_mutex);
     Car *car = &cars[car_count++];
     strncpy(car->name, car_name, sizeof(car->name));
-    strncpy(car->lowest_floor, lowest_floor, sizeof(car->lowest_floor));
-    strncpy(car->highest_floor, highest_floor, sizeof(car->highest_floor));
     strncpy(car->current_floor, lowest_floor, sizeof(car->current_floor));
     strncpy(car->destination_floor, lowest_floor, sizeof(car->destination_floor));
     strncpy(car->status, "Closed", sizeof(car->status));
@@ -164,17 +113,17 @@ void *handle_car(void *arg) {
 
 int can_service_floor(Car *car, const char *floor) {
     int floor_num = atoi(floor);
-    int lowest_floor_num = atoi(car->lowest_floor);
-    int highest_floor_num = atoi(car->highest_floor);
+    int lowest_floor_num = atoi(car->current_floor);
+    int highest_floor_num = atoi(car->destination_floor);
 
     if (floor[0] == 'B') {
         floor_num = -atoi(floor + 1);
     }
-    if (car->lowest_floor[0] == 'B') {
-        lowest_floor_num = -atoi(car->lowest_floor + 1);
+    if (car->current_floor[0] == 'B') {
+        lowest_floor_num = -atoi(car->current_floor + 1);
     }
-    if (car->lowest_floor[0] == 'B') {
-        highest_floor_num = -atoi(car->lowest_floor + 1);
+    if (car->destination_floor[0] == 'B') {
+        highest_floor_num = -atoi(car->destination_floor + 1);
     }
 
     return floor_num >= lowest_floor_num && floor_num <= highest_floor_num;
@@ -218,7 +167,7 @@ void *handle_call_pad(void *arg) {
     int my_car_diff = diff_from_call;
     for (int i = 0; i < car_count; i++) {
         pthread_mutex_lock(&cars[i].mutex);
-        if (strcmp(cars[i].status, "Closed") == 0 && can_service_floor(&cars[i], source_floor)) {
+        if (strcmp(cars[i].status, "Closed") == 0) {
             my_car_diff = abs(atoi(source_floor) - atoi(cars[i].current_floor));
             if (my_car_diff < diff_from_call){
                 diff_from_call = my_car_diff;
