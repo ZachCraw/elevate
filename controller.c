@@ -14,6 +14,8 @@
 
 typedef struct {
     char name[256];
+    char lowest_floor[4];
+    char highest_floor[4];
     char current_floor[4];
     char destination_floor[4];
     char status[8];
@@ -81,6 +83,8 @@ void *handle_car(void *arg) {
     pthread_mutex_lock(&car_mutex);
     Car *car = &cars[car_count++];
     strncpy(car->name, car_name, sizeof(car->name));
+    strncpy(car->lowest_floor, lowest_floor, sizeof(car->lowest_floor));
+    strncpy(car->highest_floor, highest_floor, sizeof(car->highest_floor));
     strncpy(car->current_floor, lowest_floor, sizeof(car->current_floor));
     strncpy(car->destination_floor, lowest_floor, sizeof(car->destination_floor));
     strncpy(car->status, "Closed", sizeof(car->status));
@@ -113,17 +117,17 @@ void *handle_car(void *arg) {
 
 int can_service_floor(Car *car, const char *floor) {
     int floor_num = atoi(floor);
-    int lowest_floor_num = atoi(car->current_floor);
-    int highest_floor_num = atoi(car->destination_floor);
+    int lowest_floor_num = atoi(car->lowest_floor);
+    int highest_floor_num = atoi(car->highest_floor);
 
     if (floor[0] == 'B') {
         floor_num = -atoi(floor + 1);
     }
-    if (car->current_floor[0] == 'B') {
-        lowest_floor_num = -atoi(car->current_floor + 1);
+    if (car->lowest_floor[0] == 'B') {
+        lowest_floor_num = -atoi(car->lowest_floor + 1);
     }
-    if (car->destination_floor[0] == 'B') {
-        highest_floor_num = -atoi(car->destination_floor + 1);
+    if (car->highest_floor[0] == 'B') {
+        highest_floor_num = -atoi(car->highest_floor + 1);
     }
 
     return floor_num >= lowest_floor_num && floor_num <= highest_floor_num;
@@ -167,7 +171,7 @@ void *handle_call_pad(void *arg) {
     int my_car_diff = diff_from_call;
     for (int i = 0; i < car_count; i++) {
         pthread_mutex_lock(&cars[i].mutex);
-        if (strcmp(cars[i].status, "Closed") == 0) {
+        if (strcmp(cars[i].status, "Closed") == 0 && can_service_floor(&cars[i], source_floor) && can_service_floor(&cars[i], destination_floor)) {
             my_car_diff = abs(atoi(source_floor) - atoi(cars[i].current_floor));
             if (my_car_diff < diff_from_call){
                 diff_from_call = my_car_diff;
