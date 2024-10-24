@@ -25,10 +25,24 @@ typedef struct {
     int queue_size;
 } Car;
 
-Car cars[10];
+Car cars[MAX_CARS];
 int car_count = 0;
 int server_socket;
 pthread_mutex_t car_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+void handle_sigint(int sig);
+void log_message(const char *message);
+void *handle_car(void *arg);
+int can_service_floor(Car *car, const char *floor);
+void add_to_queue(Car *car, const char *floor);
+void find_available_car();
+void *handle_call_pad(void *arg);
+void start_server();
+
+int main() {
+    start_server();
+    return 0;
+}
 
 void handle_sigint(int sig) {
     close(server_socket);
@@ -141,6 +155,26 @@ void add_to_queue(Car *car, const char *floor) {
     pthread_mutex_unlock(&car->mutex);
 }
 
+void find_available_car() {
+    pthread_mutex_lock(&car_mutex);
+    Car *selected_car = NULL;
+    int diff_from_call = __INT_MAX__;
+    int my_car_diff = diff_from_call;
+    for (int i = 0; i < car_count; i++) {
+        pthread_mutex_lock(&cars[i].mutex);
+        if (strcmp(cars[i].status, "Closed") == 0 && can_service_floor(&cars[i], source_floor) && can_service_floor(&cars[i], destination_floor)) {
+            my_car_diff = abs(atoi(source_floor) - atoi(cars[i].current_floor));
+            if (my_car_diff < diff_from_call){
+                diff_from_call = my_car_diff;
+                selected_car = &cars[i];
+                pthread_mutex_unlock(&cars[i].mutex);
+            }
+        }
+        pthread_mutex_unlock(&cars[i].mutex);
+    }
+    return selected_car;
+}
+
 void *handle_call_pad(void *arg) {
     int call_pad_socket = *(int *)arg;
     free(arg);
@@ -165,22 +199,7 @@ void *handle_call_pad(void *arg) {
     }
 
     // Find an available car
-    pthread_mutex_lock(&car_mutex);
-    Car *selected_car = NULL;
-    int diff_from_call = 1000;
-    int my_car_diff = diff_from_call;
-    for (int i = 0; i < car_count; i++) {
-        pthread_mutex_lock(&cars[i].mutex);
-        if (strcmp(cars[i].status, "Closed") == 0 && can_service_floor(&cars[i], source_floor) && can_service_floor(&cars[i], destination_floor)) {
-            my_car_diff = abs(atoi(source_floor) - atoi(cars[i].current_floor));
-            if (my_car_diff < diff_from_call){
-                diff_from_call = my_car_diff;
-                selected_car = &cars[i];
-                pthread_mutex_unlock(&cars[i].mutex);
-            }
-        }
-        pthread_mutex_unlock(&cars[i].mutex);
-    }
+    selected_car = find_available_car();
 
     if (selected_car) {
         // Send car name to call pad
@@ -280,9 +299,4 @@ void start_server() {
             free(client_socket);
         }
     }
-}
-
-int main() {
-    start_server();
-    return 0;
 }
