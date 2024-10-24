@@ -35,7 +35,7 @@ void log_message(const char *message);
 void *handle_car(void *arg);
 int can_service_floor(Car *car, const char *floor);
 void add_to_queue(Car *car, const char *floor);
-void find_available_car();
+Car *find_available_car(const char *source_floor, const char *destination_floor);
 void *handle_call_pad(void *arg);
 void start_server();
 
@@ -112,6 +112,7 @@ void *handle_car(void *arg) {
 
         // Handle STATUS command
         if (strncmp(buffer, "STATUS", 6) == 0) {
+            printf("Received status update: %s\n", buffer);
             char status[8], current_floor[4], destination_floor[4];
             if (sscanf(buffer, "STATUS %s %s %s", status, current_floor, destination_floor) != 3) {
                 fprintf(stderr, "Error parsing status update: %s\n", buffer);
@@ -150,12 +151,13 @@ int can_service_floor(Car *car, const char *floor) {
 void add_to_queue(Car *car, const char *floor) {
     pthread_mutex_lock(&car->mutex);
     if (car->queue_size < MAX_QUEUE) {
-        strncpy(car->queue[car->queue_size++], floor, sizeof(car->queue[0]));
+        strncpy(car->queue[car->queue_size], floor, sizeof(car->queue[0]));
+        car->queue_size++;
     }
     pthread_mutex_unlock(&car->mutex);
 }
 
-void find_available_car() {
+Car *find_available_car(const char *source_floor, const char *destination_floor) {
     pthread_mutex_lock(&car_mutex);
     Car *selected_car = NULL;
     int diff_from_call = __INT_MAX__;
@@ -164,14 +166,14 @@ void find_available_car() {
         pthread_mutex_lock(&cars[i].mutex);
         if (strcmp(cars[i].status, "Closed") == 0 && can_service_floor(&cars[i], source_floor) && can_service_floor(&cars[i], destination_floor)) {
             my_car_diff = abs(atoi(source_floor) - atoi(cars[i].current_floor));
-            if (my_car_diff < diff_from_call){
+            if (my_car_diff < diff_from_call) {
                 diff_from_call = my_car_diff;
                 selected_car = &cars[i];
-                pthread_mutex_unlock(&cars[i].mutex);
             }
         }
         pthread_mutex_unlock(&cars[i].mutex);
     }
+    pthread_mutex_unlock(&car_mutex);
     return selected_car;
 }
 
@@ -199,7 +201,7 @@ void *handle_call_pad(void *arg) {
     }
 
     // Find an available car
-    selected_car = find_available_car();
+    Car *selected_car = find_available_car(source_floor, destination_floor);
 
     if (selected_car) {
         // Send car name to call pad

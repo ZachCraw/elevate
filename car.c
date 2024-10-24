@@ -169,7 +169,40 @@ void *status_update_thread(void *arg) {
     return NULL;
 }
 
-void move_car() {
+void *button_handler(void *arg){
+    while (1) {
+        pthread_mutex_lock(&shared_mem->mutex);
+
+        if (pthread_cond_wait(&shared_mem->cond, &shared_mem->mutex) != 0) {
+            perror("pthread_cond_wait");
+            exit(EXIT_FAILURE);
+        } else {
+            if (shared_mem->open_button) {
+                if (strcmp(shared_mem->status, "Open") == 0) {
+                    usleep(delay_ms);
+                    strcpy(shared_mem->status, "Closing");
+                } else if (strcmp(shared_mem->status, "Closing") == 0 || strcmp(shared_mem->status, "Closed") == 0) {
+                    strcpy(shared_mem->status, "Opening");
+                }
+                shared_mem->open_button = 0;
+                pthread_cond_broadcast(&shared_mem->cond); // Broadcast condition
+            }
+
+            if (shared_mem->close_button) {
+                if (strcmp(shared_mem->status, "Open") == 0) {
+                    strcpy(shared_mem->status, "Closing");
+                }
+                shared_mem->close_button = 0;
+                pthread_cond_broadcast(&shared_mem->cond); // Broadcast condition
+            }
+
+            pthread_mutex_unlock(&shared_mem->mutex);
+        }
+    }
+    return NULL;
+}
+
+void *move_car(void *arg) {
     int operation_complete = 1;
     while (1) {
         printf("Current floor: %s\n", shared_mem->current_floor);
@@ -212,15 +245,21 @@ void move_car() {
             strcpy(shared_mem->status, "Opening");
             printf("Opening doors for car %s\n", car_name);
             usleep(delay_ms);
-            strcpy(shared_mem->status, "Open");
-            printf("Doors for car %s are open\n", car_name);
-            usleep(delay_ms);
-            strcpy(shared_mem->status, "Closing");
-            printf("Closing doors for car %s\n", car_name);
-            usleep(delay_ms);
-            strcpy(shared_mem->status, "Closed");
-            printf("Doors for car %s are closed\n", car_name);
-            operation_complete = 1;
+            if (strcmp(shared_mem->status, "Opening")) {
+                strcpy(shared_mem->status, "Open");
+                printf("Doors for car %s are open\n", car_name);
+                usleep(delay_ms);
+            }
+            if (strcmp(shared_mem->status, "Open")) {
+                strcpy(shared_mem->status, "Closing");
+                printf("Closing doors for car %s\n", car_name);
+                usleep(delay_ms);
+            }
+            if (strcmp(shared_mem->status, "Closing")) {
+                strcpy(shared_mem->status, "Closed");
+                printf("Doors for car %s are closed\n", car_name);
+                operation_complete = 1;
+            }
         } else {
             operation_complete = 0;
         }
@@ -249,14 +288,16 @@ int main(int argc, char **argv) {
 
     connect_to_controller();
 
-    pthread_t command_thread, status_thread;
+    pthread_t command_thread, status_thread, move_thread, button_thread;
     pthread_create(&command_thread, NULL, receive_commands, NULL);
     pthread_create(&status_thread, NULL, status_update_thread, NULL);
-
-    move_car();
+    pthread_create(&move_thread, NULL, move_car, NULL);
+    pthread_create(&button_thread, NULL, button_handler, NULL);
 
     pthread_join(command_thread, NULL);
     pthread_join(status_thread, NULL);
+    pthread_join(move_thread, NULL);
+    pthread_join(button_thread, NULL);
 
     return 0;
 }

@@ -78,19 +78,24 @@ int main(int argc, char **argv) {
     switch (op) {
         case OPEN_DOOR:
             shared_mem->open_button = 1;
+            pthread_cond_broadcast(&shared_mem->cond);
             break;
         case CLOSE_DOOR:
             shared_mem->close_button = 1;
+            pthread_cond_broadcast(&shared_mem->cond);
             break;
         case STOP:
             shared_mem->emergency_stop = 1;
+            pthread_cond_broadcast(&shared_mem->cond);
             break;
         case SERVICE_ON:
             shared_mem->individual_service_mode = 1;
             shared_mem->emergency_mode = 0;
+            pthread_cond_broadcast(&shared_mem->cond);
             break;
         case SERVICE_OFF:
             shared_mem->individual_service_mode = 0;
+            pthread_cond_broadcast(&shared_mem->cond);
             break;
         case UP:
             if (shared_mem->individual_service_mode != 1) {
@@ -108,6 +113,7 @@ int main(int argc, char **argv) {
                     fprintf(stderr, "Floor value out of range\n");
                 }
             }
+            pthread_cond_broadcast(&shared_mem->cond);
             break;
         case DOWN:
             if (shared_mem->individual_service_mode != 1) {
@@ -125,6 +131,7 @@ int main(int argc, char **argv) {
                     fprintf(stderr, "Floor value out of range\n");
                 }
             }
+            pthread_cond_broadcast(&shared_mem->cond);
             break;
         default:
             fprintf(stderr, "Invalid operation: \"%s\"\n", operation);
