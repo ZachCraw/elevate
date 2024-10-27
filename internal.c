@@ -20,9 +20,9 @@ enum operations check_operation(char *operation_name) {
     } else if (strcmp(operation_name, "service_off") == 0) {
         return SERVICE_OFF;
     } else if (strcmp(operation_name, "up") == 0) {
-        return UP;
+        return MOVE_UP;
     } else if (strcmp(operation_name, "down") == 0) {
-        return DOWN;
+        return MOVE_DOWN;
     } else {
         fprintf(stderr, "Invalid operation: \"%s\"\n", operation_name);
         exit(EXIT_FAILURE);
@@ -97,7 +97,7 @@ int main(int argc, char **argv) {
             shared_mem->individual_service_mode = 0;
             pthread_cond_broadcast(&shared_mem->cond);
             break;
-        case UP:
+        case MOVE_UP:
             if (shared_mem->individual_service_mode != 1) {
                 fprintf(stderr, "Operation \"%s\" only allowed in service mode.\n", operation);
             } else if (strcmp(shared_mem->status, "Between") == 0) {
@@ -115,7 +115,7 @@ int main(int argc, char **argv) {
             }
             pthread_cond_broadcast(&shared_mem->cond);
             break;
-        case DOWN:
+        case MOVE_DOWN:
             if (shared_mem->individual_service_mode != 1) {
                 fprintf(stderr, "Operation \"%s\" only allowed in service mode.\n", operation);
             } else if (strcmp(shared_mem->status, "Between") == 0) {

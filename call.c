@@ -3,6 +3,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <arpa/inet.h>
+#include "car_shared_mem.h"
 
 #define PORT 3000
 #define BUFFER_SIZE 1024
@@ -44,21 +45,16 @@ int main(int argc, char **argv) {
     // Send call request
     char request[BUFFER_SIZE];
     snprintf(request, BUFFER_SIZE, "CALL %s %s", source_floor, destination_floor);
-    send(sock, request, strlen(request), 0);
+    send_message(sock, request);
 
     // Receive response
-    char response[BUFFER_SIZE];
-    int bytes_read = recv(sock, response, BUFFER_SIZE, 0);
-    if (bytes_read <= 0) {
+    char *response = receive_msg(sock);
+    if (response == NULL) {
         close(sock);
         fprintf(stderr, "Error receiving response from elevator system.\n");
-        exit(EXIT_FAILURE);
+        exit(1);
     }
-
-    response[bytes_read] = '\0';
-
-    printf("Received response: %s\n", response);
-
+    
     // Handle response
     if (strncmp(response, "CAR", 3) == 0) {
         char car_name[50];

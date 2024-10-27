@@ -9,9 +9,11 @@
 #include <arpa/inet.h>
 #include <time.h>
 #include <signal.h>
+#include <errno.h>
 #include "car_shared_mem.h"
 
 #define BUFFER_SIZE 1024
+#define NO_MOVEMENT "NONE"
 
 int server_socket;
 car_shared_mem *shared_mem;
@@ -113,13 +115,40 @@ void format_floor(int floor, char *floor_str, size_t size) {
     }
 }
 
-void *receive_commands(void *arg) {
-    char buffer[BUFFER_SIZE];
-    int bytes_read;
+int connect_to_controller() {
+    struct sockaddr_in server_addr;
+    server_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_socket == -1) {
+        perror("socket()");
+        return 0;
+    }
 
-    while ((bytes_read = recv(server_socket, buffer, sizeof(buffer), 0)) > 0) {
-        buffer[bytes_read] = '\0';
-        printf("Received command: %s\n", buffer);
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(3000);
+    const char *server_ip = "127.0.0.1";
+    if (inet_pton(AF_INET, server_ip, &server_addr.sin_addr) != 1) {
+        fprintf(stderr, "inet_pton(%s)\n", server_ip);
+        return 0;
+    }
+
+    if (connect(server_socket, (const struct sockaddr *)&server_addr, sizeof(server_addr)) == -1) {
+        perror("connect()");
+        return 0;
+    }
+
+    char message[BUFFER_SIZE];
+    snprintf(message, BUFFER_SIZE, "CAR %s %s %s", car_name, lowest_floor, highest_floor);
+    send_message(server_socket, message);
+
+    return 1;
+}
+
+// Modify receive_commands():
+void *receive_commands(void *arg) {
+    while (1) {
+        char *buffer = receive_msg(server_socket);
+        printf("RECV: %s\n", buffer);
 
         if (strncmp(buffer, "FLOOR", 5) == 0) {
             char floor[4];
@@ -129,38 +158,20 @@ void *receive_commands(void *arg) {
             pthread_cond_broadcast(&shared_mem->cond);
             pthread_mutex_unlock(&shared_mem->mutex);
         }
+
+        free(buffer);
     }
     return NULL;
-}
-
-void connect_to_controller() {
-    struct sockaddr_in server_addr;
-    server_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_socket == -1) {
-        perror("socket");
-        exit(EXIT_FAILURE);
-    }
-
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(3000);
-    inet_pton(AF_INET, "127.0.0.1", &server_addr.sin_addr);
-
-    connect(server_socket, (struct sockaddr *)&server_addr, sizeof(server_addr));
-
-    char message[BUFFER_SIZE];
-    snprintf(message, BUFFER_SIZE, "CAR %s %s %s", car_name, lowest_floor, highest_floor);
-    send(server_socket, message, strlen(message), 0);
 }
 
 void send_status_update() {
     char message[BUFFER_SIZE];
     snprintf(message, BUFFER_SIZE, "STATUS %s %s %s", shared_mem->status, shared_mem->current_floor, shared_mem->destination_floor);
-    send(server_socket, message, strlen(message), 0);
+    send_message(server_socket, message);
 }
 
 void *status_update_thread(void *arg) {
     while (1) {
-        usleep(delay_ms);
         pthread_mutex_lock(&shared_mem->mutex);
         pthread_cond_wait(&shared_mem->cond, &shared_mem->mutex);
         send_status_update();
@@ -169,7 +180,7 @@ void *status_update_thread(void *arg) {
     return NULL;
 }
 
-void *button_handler(void *arg){
+void *button_handler(void *arg) {
     while (1) {
         pthread_mutex_lock(&shared_mem->mutex);
 
@@ -181,23 +192,28 @@ void *button_handler(void *arg){
                 if (strcmp(shared_mem->status, "Open") == 0) {
                     usleep(delay_ms);
                     strcpy(shared_mem->status, "Closing");
+                    usleep(delay_ms);
                 } else if (strcmp(shared_mem->status, "Closing") == 0 || strcmp(shared_mem->status, "Closed") == 0) {
                     strcpy(shared_mem->status, "Opening");
+                    usleep(delay_ms);
                 }
                 shared_mem->open_button = 0;
-                pthread_cond_broadcast(&shared_mem->cond); // Broadcast condition
+                // printf("Opening doors for car %s\n", car_name);
+                pthread_cond_broadcast(&shared_mem->cond);
             }
 
             if (shared_mem->close_button) {
                 if (strcmp(shared_mem->status, "Open") == 0) {
                     strcpy(shared_mem->status, "Closing");
+                    usleep(delay_ms);
                 }
                 shared_mem->close_button = 0;
-                pthread_cond_broadcast(&shared_mem->cond); // Broadcast condition
+                // printf("Closing doors for car %s\n", car_name);
+                pthread_cond_broadcast(&shared_mem->cond);
             }
-
-            pthread_mutex_unlock(&shared_mem->mutex);
         }
+
+        pthread_mutex_unlock(&shared_mem->mutex);
     }
     return NULL;
 }
@@ -205,21 +221,48 @@ void *button_handler(void *arg){
 void *move_car(void *arg) {
     int operation_complete = 1;
     while (1) {
-        printf("Current floor: %s\n", shared_mem->current_floor);
-        printf("Destination floor: %s\n", shared_mem->destination_floor);
-        printf("Status: %s\n", shared_mem->status);
+        // printf("Current floor: %s\n", shared_mem->current_floor);
+        // printf("Destination floor: %s\n", shared_mem->destination_floor);
+        // printf("Status: %s\n", shared_mem->status);
         pthread_mutex_lock(&shared_mem->mutex);
 
-        while (strcmp(shared_mem->current_floor, shared_mem->destination_floor) == 0 && operation_complete) {
-            pthread_cond_wait(&shared_mem->cond, &shared_mem->mutex);
+        if (strcmp(shared_mem->current_floor, shared_mem->destination_floor) == 0) {
+            if (pthread_cond_wait(&shared_mem->cond, &shared_mem->mutex)) {
+                perror("pthread_cond_wait");
+                exit(EXIT_FAILURE);
+            } else if (operation_complete) {
+                if (strcmp(shared_mem->status, "Closed") == 0) {
+                    strcpy(shared_mem->status, "Opening");
+                    pthread_mutex_unlock(&shared_mem->mutex); // Unlock before sleeping
+                    // printf("Opening doors for car %s\n", car_name);
+                    usleep(delay_ms);
+                    pthread_mutex_lock(&shared_mem->mutex); // Lock again before accessing shared memory
+                }
+                if (strcmp(shared_mem->status, "Opening") == 0) {
+                    strcpy(shared_mem->status, "Open");
+                    pthread_mutex_unlock(&shared_mem->mutex); // Unlock before sleeping
+                    // printf("Doors for car %s are open\n", car_name);
+                    usleep(delay_ms);
+                    pthread_mutex_lock(&shared_mem->mutex); // Lock again before accessing shared memory
+                }
+                if (strcmp(shared_mem->status, "Open") == 0) {
+                    strcpy(shared_mem->status, "Closing");
+                    pthread_mutex_unlock(&shared_mem->mutex); // Unlock before sleeping
+                    // printf("Closing doors for car %s\n", car_name);
+                    usleep(delay_ms);
+                    pthread_mutex_lock(&shared_mem->mutex); // Lock again before accessing shared memory
+                }
+                if (strcmp(shared_mem->status, "Closing") == 0) {
+                    strcpy(shared_mem->status, "Closed");
+                    pthread_mutex_unlock(&shared_mem->mutex); // Unlock before sleeping
+                    usleep(delay_ms);
+                    pthread_mutex_lock(&shared_mem->mutex); // Lock again before accessing shared memory
+                    operation_complete = 1;
+                }
+            }
         }
 
-        if (shared_mem->emergency_mode == 1) {
-            pthread_mutex_unlock(&shared_mem->mutex);
-            continue;
-        }
-
-        if (shared_mem->individual_service_mode == 1) {
+        if (shared_mem->emergency_mode == 1 || shared_mem->individual_service_mode == 1) {
             pthread_mutex_unlock(&shared_mem->mutex);
             continue;
         }
@@ -232,41 +275,27 @@ void *move_car(void *arg) {
         if (current_floor_int < destination_floor_int && current_floor_int < highest_floor_int) {
             strcpy(shared_mem->status, "Between");
             usleep(delay_ms);
+            strcpy(shared_mem->status, "Closed");
             int new_floor = current_floor_int + 1;
             format_floor(new_floor, shared_mem->current_floor, sizeof(shared_mem->current_floor));
-            operation_complete = 0;
+            pthread_mutex_unlock(&shared_mem->mutex); // Unlock before sleeping
+            pthread_mutex_lock(&shared_mem->mutex); // Lock again before accessing shared memory
+            operation_complete = 1;
         } else if (current_floor_int > destination_floor_int && current_floor_int > lowest_floor_int) {
             strcpy(shared_mem->status, "Between");
             usleep(delay_ms);
+            strcpy(shared_mem->status, "Closed");
             int new_floor = current_floor_int - 1;
             format_floor(new_floor, shared_mem->current_floor, sizeof(shared_mem->current_floor));
-            operation_complete = 0;
-        } else if (current_floor_int == destination_floor_int) {
-            strcpy(shared_mem->status, "Opening");
-            printf("Opening doors for car %s\n", car_name);
-            usleep(delay_ms);
-            if (strcmp(shared_mem->status, "Opening")) {
-                strcpy(shared_mem->status, "Open");
-                printf("Doors for car %s are open\n", car_name);
-                usleep(delay_ms);
-            }
-            if (strcmp(shared_mem->status, "Open")) {
-                strcpy(shared_mem->status, "Closing");
-                printf("Closing doors for car %s\n", car_name);
-                usleep(delay_ms);
-            }
-            if (strcmp(shared_mem->status, "Closing")) {
-                strcpy(shared_mem->status, "Closed");
-                printf("Doors for car %s are closed\n", car_name);
-                operation_complete = 1;
-            }
-        } else {
-            operation_complete = 0;
+            pthread_mutex_unlock(&shared_mem->mutex); // Unlock before sleeping
+            pthread_mutex_lock(&shared_mem->mutex); // Lock again before accessing shared memory
+            operation_complete = 1;
         }
 
         pthread_cond_broadcast(&shared_mem->cond);
         pthread_mutex_unlock(&shared_mem->mutex);
     }
+    return NULL;
 }
 
 int main(int argc, char **argv) {
@@ -286,13 +315,15 @@ int main(int argc, char **argv) {
     // Set up signal handler for clean termination
     signal(SIGINT, signal_handler);
 
-    connect_to_controller();
-
     pthread_t command_thread, status_thread, move_thread, button_thread;
-    pthread_create(&command_thread, NULL, receive_commands, NULL);
-    pthread_create(&status_thread, NULL, status_update_thread, NULL);
-    pthread_create(&move_thread, NULL, move_car, NULL);
-    pthread_create(&button_thread, NULL, button_handler, NULL);
+
+    if(connect_to_controller()){
+        pthread_create(&command_thread, NULL, receive_commands, NULL);
+        pthread_create(&status_thread, NULL, status_update_thread, NULL);
+    } else {
+        pthread_create(&move_thread, NULL, move_car, NULL);
+        pthread_create(&button_thread, NULL, button_handler, NULL);
+    }
 
     pthread_join(command_thread, NULL);
     pthread_join(status_thread, NULL);
